@@ -4,8 +4,8 @@ import com.datastream.migration.enums.ErrorType;
 import com.datastream.migration.model.ErrorRecord;
 import com.datastream.migration.model.MigrationConfig;
 import com.datastream.migration.model.MigrationData;
-import com.google.common.hash.BloomFilter;
-import com.google.common.hash.Funnels;
+import com.datastream.migration.strategy.DuplicateStrategy;
+import com.datastream.migration.strategy.DuplicateStrategyFactory;
 import org.rocksdb.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -57,9 +57,9 @@ public class RocksDBDuplicateFilter implements DuplicateFilter {
     private Options options;
     
     /**
-     * BloomFilter - 内存层快速判断
+     * 去重策略（可插拔）
      */
-    private BloomFilter<String> bloomFilter;
+    private DuplicateStrategy duplicateStrategy;
     
     /**
      * RocksDB 数据目录
@@ -101,7 +101,7 @@ public class RocksDBDuplicateFilter implements DuplicateFilter {
     
     /**
      * 初始化过滤器
-     * 创建 BloomFilter 并打开 RocksDB
+     * 根据配置创建去重策略（BloomFilter+RocksDB 或 RocksDB Only）
      */
     @Override
     public void init() {
@@ -116,8 +116,13 @@ public class RocksDBDuplicateFilter implements DuplicateFilter {
             // 3. 打开或创建数据库
             openDatabase();
             
-            // 4. 创建 BloomFilter
-            createBloomFilter();
+            // 4. 根据配置创建去重策略（可插拔）
+            this.duplicateStrategy = DuplicateStrategyFactory.createStrategy(
+                rocksDB, 
+                config.isEnableBloomFilter(),  // 是否启用 BloomFilter
+                config.getExpectedInsertions(),
+                config.getFpp()
+            );
             
             // 5. 统计现有数据量
             long existingCount = countExistingData();
@@ -126,7 +131,7 @@ public class RocksDBDuplicateFilter implements DuplicateFilter {
             // 6. 初始化错误处理器
             this.errorRecordHandler = new ErrorRecordHandler(config);
             
-            logger.info("RocksDB 过滤器初始化完成");
+            logger.info("RocksDB 过滤器初始化完成，使用策略：{}", duplicateStrategy.getStrategyName());
         } catch (Exception e) {
             logger.error("RocksDB 过滤器初始化失败", e);
             throw new RuntimeException("RocksDB 过滤器初始化失败", e);
@@ -135,9 +140,7 @@ public class RocksDBDuplicateFilter implements DuplicateFilter {
     
     /**
      * 检查数据是否重复
-     * 双重校验机制：
-     * 1. BloomFilter 快速判断
-     * 2. RocksDB 精确校验
+     * 委托给去重策略处理
      * 
      * @param data 待检查的迁移数据
      * @return true-重复，false-不重复
@@ -151,17 +154,8 @@ public class RocksDBDuplicateFilter implements DuplicateFilter {
         String duplicateKey = data.getDuplicateKey().trim();
         
         try {
-            // 第一重：BloomFilter 快速判断
-            if (!bloomFilter.mightContain(duplicateKey)) {
-                return false;  // BloomFilter 认为不存在，则一定不存在
-            }
-            
-            // 第二重：RocksDB 精确校验
-            byte[] keyBytes = duplicateKey.getBytes(StandardCharsets.UTF_8);
-            byte[] value = rocksDB.get(keyBytes);
-            
-            // 如果 RocksDB 中存在该 key，则是重复数据
-            return value != null;
+            // 委托给策略处理
+            return duplicateStrategy.isDuplicate(duplicateKey);
             
         } catch (Exception e) {
             logger.error("检查数据重复性失败，key={}", duplicateKey, e);
@@ -182,7 +176,6 @@ public class RocksDBDuplicateFilter implements DuplicateFilter {
         }
         
         List<MigrationData> filteredList = new ArrayList<>(dataList.size());
-        List<WriteBatch> batchToAdd = new ArrayList<>();
         
         try {
             // 遍历数据并进行去重
@@ -192,9 +185,8 @@ public class RocksDBDuplicateFilter implements DuplicateFilter {
                         // 不重复，添加到结果列表
                         filteredList.add(data);
                         
-                        // 准备批量写入
-                        prepareBatchWrite(data, batchToAdd);
-                        
+                        // 委托给策略保存数据
+                        duplicateStrategy.addDuplicate(data.getDuplicateKey().trim());
                         processedCount.incrementAndGet();
                     } else {
                         // 重复数据，记录异常
@@ -207,11 +199,6 @@ public class RocksDBDuplicateFilter implements DuplicateFilter {
                 }
             }
             
-            // 批量写入 RocksDB
-            if (!batchToAdd.isEmpty()) {
-                flushBatch(batchToAdd);
-            }
-            
         } catch (Exception e) {
             logger.error("批量过滤失败", e);
             throw new RuntimeException("批量过滤失败", e);
@@ -222,6 +209,7 @@ public class RocksDBDuplicateFilter implements DuplicateFilter {
     
     /**
      * 添加重复键到 RocksDB（用于加载已有数据）
+     * 委托给去重策略处理
      * 
      * @param duplicateKey 重复键
      */
@@ -233,13 +221,8 @@ public class RocksDBDuplicateFilter implements DuplicateFilter {
             
             String key = duplicateKey.trim();
             
-            // 添加到 BloomFilter
-            bloomFilter.put(key);
-            
-            // 添加到 RocksDB
-            byte[] keyBytes = key.getBytes(StandardCharsets.UTF_8);
-            byte[] value = "1".getBytes(StandardCharsets.UTF_8);
-            rocksDB.put(keyBytes, value);
+            // 委托给策略处理
+            duplicateStrategy.addDuplicate(key);
             
         } catch (Exception e) {
             logger.error("添加重复键失败，key={}", duplicateKey, e);
@@ -263,7 +246,6 @@ public class RocksDBDuplicateFilter implements DuplicateFilter {
             byte[] keyBytes = key.getBytes(StandardCharsets.UTF_8);
             rocksDB.delete(keyBytes);
             
-            // 注意：BloomFilter 不支持删除，但下次检查时会通过 RocksDB 精确校验
             logger.info("✓ 已从 RocksDB 删除 key: {}", key);
             
         } catch (Exception e) {
@@ -282,20 +264,11 @@ public class RocksDBDuplicateFilter implements DuplicateFilter {
             return;
         }
         
-        String duplicateKey = data.getDuplicateKey().trim();
-        
         try {
-            // 1. 添加到 BloomFilter
-            bloomFilter.put(duplicateKey);
-            
-            // 2. 添加到 RocksDB
-            byte[] keyBytes = duplicateKey.getBytes(StandardCharsets.UTF_8);
-            byte[] valueBytes = String.valueOf(data.getId()).getBytes(StandardCharsets.UTF_8);
-            
-            rocksDB.put(keyBytes, valueBytes);
-            
+            // 委托给策略保存数据
+            duplicateStrategy.addDuplicate(data.getDuplicateKey().trim());
         } catch (Exception e) {
-            logger.error("添加数据失败，key={}", duplicateKey, e);
+            logger.error("添加数据失败，key={}", data.getDuplicateKey(), e);
         }
     }
     
@@ -313,40 +286,22 @@ public class RocksDBDuplicateFilter implements DuplicateFilter {
         logger.info("开始批量添加 {} 条数据...", dataList.size());
         long startTime = System.currentTimeMillis();
         
-        WriteBatch batch = new WriteBatch();
-        int batchSize = 10000;  // 每 1 万条提交一次
-        
         try {
             for (int i = 0; i < dataList.size(); i++) {
                 MigrationData data = dataList.get(i);
                 
                 if (data.getDuplicateKey() != null) {
-                    String key = data.getDuplicateKey().trim();
-                    
-                    // 添加到 BloomFilter
-                    bloomFilter.put(key);
-                    
-                    // 添加到 WriteBatch
-                    byte[] keyBytes = key.getBytes(StandardCharsets.UTF_8);
-                    byte[] valueBytes = String.valueOf(data.getId()).getBytes(StandardCharsets.UTF_8);
-                    batch.put(keyBytes, valueBytes);
+                    // 委托给策略保存数据
+                    duplicateStrategy.addDuplicate(data.getDuplicateKey().trim());
                 }
                 
-                // 每 1 万条提交一次批量写入
-                if ((i + 1) % batchSize == 0) {
-                    rocksDB.write(new WriteOptions(), batch);
-                    batch.clear();
-                    
+                // 每 1 万条打印一次进度
+                if ((i + 1) % 10000 == 0) {
                     if ((i + 1) % 100000 == 0) {
                         logger.info("已添加 {}/{} 条数据，进度：{}%", 
                                 i + 1, dataList.size(), ((i + 1) * 100.0) / dataList.size());
                     }
                 }
-            }
-            
-            // 提交剩余数据
-            if (batch.getDataSize() > 0) {
-                rocksDB.write(new WriteOptions(), batch);
             }
             
             long endTime = System.currentTimeMillis();
@@ -357,8 +312,6 @@ public class RocksDBDuplicateFilter implements DuplicateFilter {
         } catch (Exception e) {
             logger.error("批量添加数据失败", e);
             throw new RuntimeException("批量添加数据失败", e);
-        } finally {
-            batch.close();
         }
     }
     
@@ -386,16 +339,9 @@ public class RocksDBDuplicateFilter implements DuplicateFilter {
     public void loadFromFile() {
         try {
             // RocksDB 在 open 时自动加载最新数据
-            // 只需要重建 BloomFilter
+            // 策略模式不需要额外操作
             
-            logger.info("开始重建 BloomFilter...");
-            long startTime = System.currentTimeMillis();
-            
-            // 重新创建 BloomFilter
-            createBloomFilter();
-            
-            long endTime = System.currentTimeMillis();
-            logger.info("BloomFilter 重建完成，耗时：{} ms", (endTime - startTime));
+            logger.info("RocksDB 数据已自动加载，无需额外操作");
             
         } catch (Exception e) {
             logger.error("加载过滤器数据失败", e);
@@ -413,13 +359,10 @@ public class RocksDBDuplicateFilter implements DuplicateFilter {
             // 清空 RocksDB
             rocksDB.deleteRange(new WriteOptions(), new byte[0], new byte[]{Byte.MAX_VALUE});
             
-            // 重置 BloomFilter
-            createBloomFilter();
-            
             processedCount.set(0);
             filteredCount.set(0);
             
-            logger.info("过滤器已清空");
+            logger.info("RocksDB 已清空");
         } catch (Exception e) {
             logger.error("清空过滤器失败", e);
         }
@@ -540,23 +483,6 @@ public class RocksDBDuplicateFilter implements DuplicateFilter {
     }
     
     /**
-     * 创建 BloomFilter
-     */
-    private void createBloomFilter() {
-        // 根据现有数据量调整 BloomFilter 大小
-        long existingCount = countExistingData();
-        long expectedSize = Math.max(existingCount, config.getExpectedInsertions());
-        
-        this.bloomFilter = BloomFilter.create(
-                Funnels.stringFunnel(StandardCharsets.UTF_8),
-                expectedSize,
-                config.getFpp()
-        );
-        
-        logger.info("BloomFilter 创建完成，预期大小：{}, 误判率：{}", expectedSize, config.getFpp());
-    }
-    
-    /**
      * 统计现有数据量
      */
     private long countExistingData() {
@@ -566,21 +492,6 @@ public class RocksDBDuplicateFilter implements DuplicateFilter {
             logger.warn("统计现有数据量失败", e);
             return 0;
         }
-    }
-    
-    /**
-     * 准备批量写入
-     */
-    private void prepareBatchWrite(MigrationData data, List<WriteBatch> batches) throws Exception {
-        String key = data.getDuplicateKey().trim();
-        byte[] keyBytes = key.getBytes(StandardCharsets.UTF_8);
-        byte[] valueBytes = String.valueOf(data.getId()).getBytes(StandardCharsets.UTF_8);
-        
-        // 添加到 BloomFilter
-        bloomFilter.put(key);
-        
-        // 添加到 RocksDB
-        rocksDB.put(keyBytes, valueBytes);
     }
     
     /**

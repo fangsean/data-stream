@@ -416,7 +416,7 @@ public class RocksDBFilterIntegrationTest_Part2 {
                 .startDate(new Date())
                 .endDate(new Date())
                 .threadCount(1)
-                .enableBloomFilter(true)
+                .enableBloomFilter(false)
                 .expectedInsertions(10000000L)
                 .fpp(0.001)
                 .filterDataPath("data/test/filter")

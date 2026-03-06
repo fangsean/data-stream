@@ -368,6 +368,7 @@ public class MigrationStartupRunner implements CommandLineRunner {
     private MigrationConfig createMigrationConfig() {
         return MigrationConfig.builder()
                 .taskId("SPRING_BOOT_AUTO_RUN_" + System.currentTimeMillis())
+                .enableBloomFilter(migrationProperties.isEnableBloomFilter())
                 .expectedInsertions(migrationProperties.getExpectedInsertions())
                 .fpp(migrationProperties.getFpp())
                 .filterDataPath(migrationProperties.getFilterDataPath())

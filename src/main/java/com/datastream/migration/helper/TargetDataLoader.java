@@ -133,7 +133,7 @@ public class TargetDataLoader {
                         if (count % PROGRESS_INTERVAL == 0) {
                             long elapsed = System.currentTimeMillis() - dayStartTime;
                             double speed = (count * 1000.0) / elapsed;  // 条/秒
-                            logger.info("  进度：{} 条，耗时 {} 秒，速度：{:.0f} 条/秒", 
+                            logger.info("  进度：{} 条，耗时 {} 秒，速度：{} 条/秒",
                                     count, elapsed / 1000, speed);
                         }
                     }
@@ -141,7 +141,7 @@ public class TargetDataLoader {
                 
                 long dayDuration = System.currentTimeMillis() - dayStartTime;
                 if (count > 0) {
-                    logger.info("  单日统计 - 数据量：{} 条，耗时：{} 秒，速度：{:.0f} 条/秒", 
+                    logger.info("  单日统计 - 数据量：{} 条，耗时：{} 秒，速度：{} 条/秒",
                             count, dayDuration / 1000, (count * 1000.0) / dayDuration);
                 }
                 

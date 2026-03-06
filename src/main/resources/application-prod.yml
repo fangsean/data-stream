@@ -37,11 +37,11 @@ logging:
 migration:
   batch-size: 5000
   thread-count: 8
-  enable-bloom-filter: true
-  expected-insertions: 1000000000
-  fpp: 0.001
   filter-data-path: data/spring-boot-auto-run
   check-data-path: data/checkpoint
+  enable-bloom-filter: false  # 是否启用 BloomFilter（true=使用，false=只用 RocksDB）
+  expected-insertions: 1000000000
+  fpp: 0.001
 
 
   # B 库已有数据加载配置（按天拆分）

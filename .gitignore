@@ -1,7 +1,6 @@
 .idea/**
 .vscode/**
 .git/**
-.gitignore
 .gitmodules
 .gitkeep
 .DS_Store
