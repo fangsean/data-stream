@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE logback>
+<configuration>
+    <!-- 定义日志格式 -->
+    <property name="LOG_PATTERN" value="%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"/>
+    
+    <!-- 控制台输出 -->
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>${LOG_PATTERN}</pattern>
+            <charset>UTF-8</charset>
+        </encoder>
+    </appender>
+    
+    <!-- 文件输出 - INFO 级别 -->
+    <appender name="FILE_INFO" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>logs/migration-info.log</file>
+        <encoder>
+            <pattern>${LOG_PATTERN}</pattern>
+            <charset>UTF-8</charset>
+        </encoder>
+        <filter class="ch.qos.logback.classic.filter.LevelFilter">
+            <level>INFO</level>
+            <onMatch>ACCEPT</onMatch>
+            <onMismatch>DENY</onMismatch>
+        </filter>
+        <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+            <fileNamePattern>logs/migration-info.%d{yyyy-MM-dd}.log</fileNamePattern>
+            <maxHistory>30</maxHistory>
+            <maxFileSize>100MB</maxFileSize>
+        </rollingPolicy>
+    </appender>
+    
+    <!-- 文件输出 - ERROR 级别 -->
+    <appender name="FILE_ERROR" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>logs/migration-error.log</file>
+        <encoder>
+            <pattern>${LOG_PATTERN}</pattern>
+            <charset>UTF-8</charset>
+        </encoder>
+        <filter class="ch.qos.logback.classic.filter.LevelFilter">
+            <level>ERROR</level>
+            <onMatch>ACCEPT</onMatch>
+            <onMismatch>DENY</onMismatch>
+        </filter>
+        <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+            <fileNamePattern>logs/migration-error.%d{yyyy-MM-dd}.log</fileNamePattern>
+            <maxHistory>30</maxHistory>
+            <maxFileSize>100MB</maxFileSize>
+        </rollingPolicy>
+    </appender>
+    
+    <!-- 异步日志 -->
+    <appender name="ASYNC_FILE_INFO" class="ch.qos.logback.classic.AsyncAppender">
+        <appender-ref ref="FILE_INFO"/>
+        <queueSize>512</queueSize>
+        <discardingThreshold>0</discardingThreshold>
+    </appender>
+    
+    <appender name="ASYNC_FILE_ERROR" class="ch.qos.logback.classic.AsyncAppender">
+        <appender-ref ref="FILE_ERROR"/>
+        <queueSize>512</queueSize>
+        <discardingThreshold>0</discardingThreshold>
+    </appender>
+    
+    <!-- 应用日志级别 -->
+    <logger name="com.datastream.migration" level="DEBUG" additivity="false">
+        <appender-ref ref="CONSOLE"/>
+        <appender-ref ref="ASYNC_FILE_INFO"/>
+        <appender-ref ref="ASYNC_FILE_ERROR"/>
+    </logger>
+    
+    <!-- Spring 框架日志级别 -->
+    <logger name="org.springframework" level="WARN"/>
+    <logger name="org.mybatis" level="WARN"/>
+    
+    <!-- 根日志级别 -->
+    <root level="INFO">
+        <appender-ref ref="CONSOLE"/>
+        <appender-ref ref="ASYNC_FILE_INFO"/>
+        <appender-ref ref="ASYNC_FILE_ERROR"/>
+    </root>
+</configuration>

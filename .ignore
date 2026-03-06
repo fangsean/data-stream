@@ -1,0 +1,14 @@
+.idea/**
+.vscode/**
+.git/**
+.gitignore
+.gitmodules
+.gitkeep
+.DS_Store
+.env
+.mvn
+.mvn/**
+data/**
+target/**
+logs
+logs/**
