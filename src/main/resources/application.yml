@@ -3,49 +3,28 @@ spring:
   application:
     name: data-stream-migration
   
-  # 数据源配置（示例）
-  datasource:
-    driver-class-name: com.mysql.cj.jdbc.Driver
-    url: jdbc:mysql://localhost:3306/source_db?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai
-    username: root
-    password: password
+  # 激活的 profile（可选：dev, test, prod）
+  profiles:
+    active: dev  # 默认激活开发环境
+  
+  # 禁用 Spring Boot DevTools 避免热部署冲突
+  devtools:
+    restart:
+      enabled: false
+    livereload:
+      enabled: false
+  
 
 # 日志配置
 logging:
   level:
     root: INFO
     com.datastream.migration: DEBUG
+    com.datastream.migration.stats: INFO
+    com.datastream.migration.db.error: ERROR
+    com.datastream.migration.rocksdb.error: ERROR
+    # 关闭 Spring Boot 自动配置报告
+    org.springframework.boot.autoconfigure: WARN
   pattern:
-    console: '%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n'
-    file: '%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n'
-  file:
-    name: logs/migration.log
-    max-size: 100MB
-    max-history: 30
-
-# MyBatis 配置
-mybatis:
-  mapper-locations: classpath:mapper/*.xml
-  type-aliases-package: com.datastream.migration.model
-  configuration:
-    map-underscore-to-camel-case: true
-    cache-enabled: true
-    lazy-loading-enabled: false
-
-# 迁移任务配置
-migration:
-  task:
-    id: MIGRATION_TASK_001
-    name: A 库到 B 库数据迁移
-    batch-size: 10000
-    thread-count: 4
-    enable-bloom-filter: true
-    expected-insertions: 1000000000
-    fpp: 0.0001
-    filter-data-path: data/filter
-    error-data-path: data/error
-    detailed-logging: true
-
-# 服务器配置
-server:
-  port: 8080
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"
+    file: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"

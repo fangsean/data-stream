@@ -38,7 +38,12 @@ public enum ErrorType {
      * 数据库连接异常
      */
     DB_CONNECTION_ERROR("DB_CONNECTION_ERROR", "数据库连接异常"),
-    
+
+    /**
+     * 处理数据失败
+     */
+    PROCESS_ERROR("PROCESS_ERROR", "处理数据失败"),
+
     /**
      * 其他错误
      */

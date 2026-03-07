@@ -78,4 +78,11 @@ public interface DuplicateFilter {
      * 释放所有资源
      */
     void destroy();
+    
+    /**
+     * 关闭过滤器（别名方法）
+     */
+    default void close() {
+        destroy();
+    }
 }

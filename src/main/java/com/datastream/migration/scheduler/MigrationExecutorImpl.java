@@ -338,7 +338,7 @@ public class MigrationExecutorImpl implements MigrationExecutor {
                 // 打印进度
                 offset += batchSize;
                 if (offset % (batchSize * 10) == 0) {
-                    logger.info("日期 {} 处理进度：{}/{}, 百分比：{:.2f}%", 
+                    logger.info("日期 {} 处理进度：{}/{}, 百分比：{}%", 
                             formatDate(businessDate), offset, dateTotalCount, 
                             (offset * 100.0) / dateTotalCount);
                 }

@@ -1,0 +1,140 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration scan="true" scanPeriod="60 seconds">
+    
+    <!-- 定义日志路径 -->
+    <property name="LOG_PATH" value="logs"/>
+    <property name="LOG_PATTERN" value="%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36}:[%line] - %msg%n"/>
+    
+    <!-- 控制台输出 -->
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>${LOG_PATTERN}</pattern>
+            <charset>UTF-8</charset>
+        </encoder>
+    </appender>
+    
+    <!-- 应用主日志 -->
+    <appender name="FILE_APP" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>${LOG_PATH}/application.log</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+            <fileNamePattern>${LOG_PATH}/application.%d{yyyy-MM-dd}.%i.log</fileNamePattern>
+            <maxFileSize>100MB</maxFileSize>
+            <maxHistory>30</maxHistory>
+            <totalSizeCap>10GB</totalSizeCap>
+        </rollingPolicy>
+        <encoder>
+            <pattern>${LOG_PATTERN}</pattern>
+            <charset>UTF-8</charset>
+        </encoder>
+    </appender>
+    
+    <!-- 统计日志（单独文件） -->
+    <appender name="FILE_STATS" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>${LOG_PATH}/migration-stats.log</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+            <fileNamePattern>${LOG_PATH}/migration-stats.%d{yyyy-MM-dd}.%i.log</fileNamePattern>
+            <maxFileSize>50MB</maxFileSize>
+            <maxHistory>30</maxHistory>
+            <totalSizeCap>2GB</totalSizeCap>
+        </rollingPolicy>
+        <encoder>
+            <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} - %msg%n</pattern>
+            <charset>UTF-8</charset>
+        </encoder>
+    </appender>
+    
+    <!-- 入库异常日志（单独文件） -->
+    <appender name="FILE_DB_ERROR" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>${LOG_PATH}/db-insert-error.log</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+            <fileNamePattern>${LOG_PATH}/db-insert-error.%d{yyyy-MM-dd}.%i.log</fileNamePattern>
+            <maxFileSize>100MB</maxFileSize>
+            <maxHistory>30</maxHistory>
+            <totalSizeCap>5GB</totalSizeCap>
+        </rollingPolicy>
+        <encoder>
+            <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36}:[%line] - %msg%n</pattern>
+            <charset>UTF-8</charset>
+        </encoder>
+    </appender>
+    
+    <!-- RocksDB 错误日志（单独文件） -->
+    <appender name="FILE_ROCKSDB_ERROR" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>${LOG_PATH}/rocksdb-error.log</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+            <fileNamePattern>${LOG_PATH}/rocksdb-error.%d{yyyy-MM-dd}.%i.log</fileNamePattern>
+            <maxFileSize>50MB</maxFileSize>
+            <maxHistory>30</maxHistory>
+            <totalSizeCap>1GB</totalSizeCap>
+        </rollingPolicy>
+        <encoder>
+            <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36}:[%line] - %msg%n</pattern>
+            <charset>UTF-8</charset>
+        </encoder>
+    </appender>
+    
+    <!-- 去重检查日志（单独文件） -->
+    <appender name="FILE_DUPLICATE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>${LOG_PATH}/duplicate-check.log</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+            <fileNamePattern>${LOG_PATH}/duplicate-check.%d{yyyy-MM-dd}.%i.log</fileNamePattern>
+            <maxFileSize>100MB</maxFileSize>
+            <maxHistory>30</maxHistory>
+            <totalSizeCap>5GB</totalSizeCap>
+        </rollingPolicy>
+        <encoder>
+            <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} - %msg%n</pattern>
+            <charset>UTF-8</charset>
+        </encoder>
+    </appender>
+    
+    <!-- 统计日志 Logger -->
+    <logger name="com.datastream.migration.stats" level="INFO" additivity="false">
+        <appender-ref ref="FILE_STATS"/>
+        <appender-ref ref="CONSOLE"/>
+    </logger>
+    
+    <!-- 数据库入库异常 Logger -->
+    <logger name="com.datastream.migration.db.error" level="ERROR" additivity="false">
+        <appender-ref ref="FILE_DB_ERROR"/>
+        <appender-ref ref="CONSOLE"/>
+    </logger>
+    
+    <!-- RocksDB 错误 Logger -->
+    <logger name="com.datastream.migration.rocksdb.error" level="ERROR" additivity="false">
+        <appender-ref ref="FILE_ROCKSDB_ERROR"/>
+        <appender-ref ref="CONSOLE"/>
+    </logger>
+    
+    <!-- 去重检查 Logger -->
+    <logger name="com.datastream.migration.duplicate" level="INFO" additivity="false">
+        <appender-ref ref="FILE_DUPLICATE"/>
+    </logger>
+    
+    <!-- 数据校验 Logger -->
+    <appender name="FILE_CHECK_ERROR" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>${LOG_PATH}/check-error.log</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+            <fileNamePattern>${LOG_PATH}/check-error.%d{yyyy-MM-dd}.%i.log</fileNamePattern>
+            <maxFileSize>100MB</maxFileSize>
+            <maxHistory>30</maxHistory>
+            <totalSizeCap>5GB</totalSizeCap>
+        </rollingPolicy>
+        <encoder>
+            <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} - %msg%n</pattern>
+            <charset>UTF-8</charset>
+        </encoder>
+    </appender>
+    
+    <logger name="com.datastream.migration.check.error" level="INFO" additivity="false">
+        <appender-ref ref="FILE_CHECK_ERROR"/>
+        <appender-ref ref="CONSOLE"/>
+    </logger>
+    
+    <!-- 应用根 Logger -->
+    <root level="INFO">
+        <appender-ref ref="CONSOLE"/>
+        <appender-ref ref="FILE_APP"/>
+    </root>
+    
+</configuration>

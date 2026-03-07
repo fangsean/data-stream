@@ -549,10 +549,12 @@ public class DataProcessServiceImpl implements DataProcessService {
          * @param errorRecord 错误记录
          */
         public void recordError(ErrorRecord errorRecord) {
-            logger.error("记录错误：task={}, type={}, message={}", 
+            logger.error("记录错误：task={}, type={}, message={}, originalDataId={}, duplicateKey={}",
                     errorRecord.getTaskId(), 
                     errorRecord.getErrorType(), 
-                    errorRecord.getErrorMessage());
+                    errorRecord.getErrorMessage(),
+                    errorRecord.getOriginalDataId(),
+                    errorRecord.getDuplicateKey());
         }
     }
 }

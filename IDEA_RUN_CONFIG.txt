@@ -1,0 +1,19 @@
+# IDEA 运行配置说明
+# 
+# 1. 右键点击 MigrationApplication.java
+# 2. 选择 "Modify Run Configuration..." 或 "Edit Configurations..."
+# 3. 在 "VM options" 中添加以下参数：
+
+-Xms512m
+-Xmx2g
+-Xss2m
+-XX:MetaspaceSize=128m
+-XX:MaxMetaspaceSize=256m
+-XX:+UseG1GC
+-XX:+HeapDumpOnOutOfMemoryError
+-XX:HeapDumpPath=logs/heapdump.hprof
+
+# 4. 在 "Environment variables" 中添加（可选）：
+SPRING_PROFILES_ACTIVE=dev
+
+# 5. 点击 Apply 和 Run

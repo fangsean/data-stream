@@ -1,0 +1,96 @@
+# 开发环境配置
+spring:
+  datasource:
+    # 主数据源（A 库 - 源库）
+    primary:
+      driver-class-name: com.mysql.cj.jdbc.Driver
+      jdbcUrl: jdbc:mysql://192.168.0.137:3306/unit-01?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false
+      username: root
+      password: password
+      hikari:
+        maximum-pool-size: 10
+        minimum-idle: 5
+        connection-timeout: 30000
+        # 流式查询优化：设置 fetch size
+        data-source-properties:
+          defaultFetchSize: 1000
+    
+    # 第二数据源（B 库 - 目标库）
+    secondary:
+      driver-class-name: com.mysql.cj.jdbc.Driver
+      jdbcUrl: jdbc:mysql://192.168.0.137:3306/unit-02?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false
+      username: root
+      password: password
+      hikari:
+        maximum-pool-size: 20
+        minimum-idle: 10
+        connection-timeout: 30000
+        # 流式查询优化：设置 fetch size
+        data-source-properties:
+          defaultFetchSize: 1000
+
+# 日志配置 - 开发环境使用 DEBUG 级别
+logging:
+  level:
+    root: INFO
+    com.datastream.migration: DEBUG
+    com.datastream.migration.stats: DEBUG
+    com.datastream.migration.db.error: ERROR
+    com.datastream.migration.rocksdb.error: ERROR
+
+
+# 迁移任务配置
+migration:
+  batch-size: 1000
+  thread-count: 2
+  enable-bloom-filter: true
+  expected-insertions: 100000
+  fpp: 0.001
+  filter-data-path: data/spring-boot-auto-run
+  check-data-path: data/checkpoint
+
+  # B 库已有数据加载配置（按天拆分）
+  target-data-load:
+    start-date: "2024-01-01"  # 开始日期
+    end-date: "2024-01-31"    # 结束日期
+    enabled: true            # 是否启用此功能
+  
+  # A 库源数据迁移配置（按天拆分）
+  source-data-migrate:
+    start-date: "2024-01-01"  # 开始日期
+    end-date: "2024-01-07"    # 结束日期
+    enabled: true            # 是否启用此功能
+  
+  # B 库数据校验配置（按天拆分）
+  target-data-check-existing:
+    start-date: "2024-01-01"  # 开始日期
+    end-date: "2024-01-07"    # 结束日期
+    enabled: true            # 是否启用此功能
+
+  # SQL 配置
+  sql:
+    # A 库查询 SQL（源库）
+    query: >-
+      SELECT id, business_time, user_code, user_name, amount, status, remark 
+      FROM source_data 
+      WHERE business_time BETWEEN ? AND ? 
+      ORDER BY id 
+#      LIMIT ? OFFSET ?
+
+    # B 库插入 SQL（目标库）
+    insert: >-
+      INSERT INTO target_data 
+      (id, business_time, user_code, user_name, amount, status, remark, 
+       source_flag, migrate_time, create_time) 
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+
+    # B 库错误表插入 SQL（不再使用，仅记录日志）
+    insert-error: >-
+      -- 已禁用，错误数据仅记录到日志文件
+      -- INSERT INTO target_data_error ... VALUES (...)
+
+    # 检查 B 库已有数据 SQL（按时间区间查询）
+    check-existing: >-
+      SELECT user_code 
+      FROM target_data 
+      WHERE business_time BETWEEN ? AND ?

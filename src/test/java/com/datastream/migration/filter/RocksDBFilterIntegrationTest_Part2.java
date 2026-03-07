@@ -16,69 +16,72 @@ import java.util.List;
 import static org.junit.Assert.*;
 
 /**
- * 大数据量去重过滤器集成测试 - 第二部分
+ * 基于 RocksDB 的去重过滤器集成测试 - 第二部分
  * 
  * 测试场景：
- * 1. 从磁盘加载已有的过滤器（模拟程序重启）
- * 2. 按日期分批生成 A 库数据
- * 3. 使用加载的过滤器进行去重
- * 4. 验证去重效果和性能
+ * 1. 从 RocksDB 加载已有的过滤器（模拟程序重启）
+ * 2. 按日期分批生成 A 库数据（模拟 10 亿数据中的一部分）
+ * 3. 使用 RocksDB 过滤器进行高性能去重
+ * 4. 验证去重效果和性能指标
  * 
- * 目标：验证完整的迁移流程：按日期分批查询 + 去重过滤
+ * 目标：验证完整的迁移流程：按日期分批查询 + RocksDB 高性能去重
  * 
  * @author DataStream
  * @version 1.0
  */
-public class DuplicateFilterIntegrationTest_Part2 {
+public class RocksDBFilterIntegrationTest_Part2 {
     
-    private static final Logger logger = LoggerFactory.getLogger(DuplicateFilterIntegrationTest_Part2.class);
+    private static final Logger logger = LoggerFactory.getLogger(RocksDBFilterIntegrationTest_Part2.class);
     
     /**
      * 测试场景：完整的迁移流程模拟
      * 
      * 步骤：
-     * 1. 从磁盘加载过滤器（第一部分已保存）
-     * 2. 按日期分批生成 A 库数据（模拟 10 亿数据中的一部分）
+     * 1. 从 RocksDB 加载已有数据（Part1 已保存）
+     * 2. 按日期分批生成 A 库数据
      * 3. 分批查询并处理数据
-     * 4. 使用过滤器去重
+     * 4. 使用 RocksDB 过滤器去重
      * 5. 统计结果和性能指标
      */
     @Test
-    public void testLoadFilterAndMigrateByDate() {
+    public void testLoadRocksDBFilterAndMigrateByDate() {
         try {
-            logger.info("==================== 第二部分测试开始：加载过滤器并按日期分批迁移 ====================");
+            logger.info("==================== RocksDB 第二部分测试开始：加载并按日期分批迁移 ====================");
             
-            // 1. 检查过滤器文件是否存在
-            File filterFile = new File("data/test/filter/filter_data.dat");
-            if (!filterFile.exists()) {
-                logger.warn("过滤器文件不存在，请先运行 Part1 测试");
-                logger.info("Response Body: {\"status\":\"skip\",\"message\":\"过滤器文件不存在，请先运行 Part1 测试\"}");
+            // 1. 检查 RocksDB 目录是否存在
+            File dbDir = new File("data/test/filter/rocksdb");
+            if (!dbDir.exists()) {
+                logger.warn("RocksDB 目录不存在，请先运行 Part1 测试");
+                logger.info("Response Body: {\"status\":\"skip\",\"message\":\"RocksDB 目录不存在，请先运行 Part1 测试\"}");
                 logger.info("HTTP Status: 200 OK");
                 return;
             }
-            logger.info("步骤 0: 检测到过滤器文件存在，大小：{} bytes", filterFile.length());
+            logger.info("步骤 0: 检测到 RocksDB 目录存在，大小：{} bytes", getDirectorySize(dbDir));
             
-            // 2. 创建配置（与 Part1 相同的配置）
+            // 2. 创建配置
             MigrationConfig config = createTestConfig();
             logger.info("步骤 1: 创建测试配置，task={}", config.getTaskId());
             
-            // 3. 创建新过滤器并从磁盘加载
-            BloomFilterDuplicateFilter filter = new BloomFilterDuplicateFilter(config);
+            // 3. 创建新过滤器并从 RocksDB 加载
+            RocksDBDuplicateFilter filter = new RocksDBDuplicateFilter(config);
             filter.init();
             
-            logger.info("步骤 2: 从磁盘加载过滤器...");
+            logger.info("步骤 2: 从 RocksDB 加载过滤器...");
             long loadStartTime = System.currentTimeMillis();
             filter.loadFromFile();
             long loadEndTime = System.currentTimeMillis();
             
-            assertEquals("应加载 100 万条数据", 1000000, filter.size());
-            logger.info("步骤 2 完成：成功加载 {} 条数据，耗时：{} ms", filter.size(), (loadEndTime - loadStartTime));
+            long loadDuration = loadEndTime - loadStartTime;
+            long size = filter.size();
+            
+            logger.info("步骤 2 完成：加载 {} 条数据，耗时：{} ms", size, loadDuration);
+            assertEquals("应加载约 100 万条数据", 1000000, size);
             
             // 4. 验证加载的数据可用性
             logger.info("步骤 3: 验证加载数据的可用性...");
             MigrationData testData = createTestData(1L, "EXISTING_KEY_0500000", generateBusinessDate(2022, 0, 500000));
             assertTrue("第 50 万条数据应标记为重复", filter.isDuplicate(testData));
-            logger.info("  验证通过：加载的数据可正常使用");
+            logger.info("  ✓ 验证通过：加载的数据可正常使用");
             
             // 5. 模拟按日期分批迁移 A 库数据
             logger.info("步骤 4: 开始模拟按日期分批迁移 A 库数据...");
@@ -100,7 +103,7 @@ public class DuplicateFilterIntegrationTest_Part2 {
             SimpleDateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd");
             
             for (Date businessDate : dateList) {
-                logger.info("\n========== 处理日期：{} ==========", formatDate(businessDate));
+                logger.info("========== 处理日期：{} ==========", formatDate(businessDate));
                 
                 // 6.1 生成该日期的 A 库数据（模拟查询）
                 // 假设每天 10 万条数据
@@ -113,12 +116,16 @@ public class DuplicateFilterIntegrationTest_Part2 {
                 int batchSize = 10000;
                 int batchCount = 0;
                 
+                long dayStartTime = System.currentTimeMillis();
+                
                 for (int offset = 0; offset < dailyData.size(); offset += batchSize) {
                     int endOffset = Math.min(offset + batchSize, dailyData.size());
                     List<MigrationData> batch = dailyData.subList(offset, endOffset);
                     
-                    // 6.2.1 执行过滤
+                    // 6.2.1 执行过滤（性能测试）
+                    long filterStart = System.currentTimeMillis();
                     List<MigrationData> filteredBatch = filter.filterDuplicates(batch);
+                    long filterEnd = System.currentTimeMillis();
                     
                     // 6.2.2 统计
                     totalRecords += batch.size();
@@ -127,28 +134,40 @@ public class DuplicateFilterIntegrationTest_Part2 {
                     
                     batchCount++;
                     
-                    // 打印批次进度
+                    // 打印批次进度和性能
                     if (batchCount % 5 == 0) {
-                        logger.info("    批次 {}/{}, 已处理：{} 条，重复：{} 条，新数据：{} 条",
+                        double batchThroughput = (batch.size() * 1000.0) / (filterEnd - filterStart);
+                        logger.info("    批次 {}/{}, 已处理：{} 条，重复：{} 条，新数据：{} 条，速度：{} 条/秒",
                                 batchCount, 
                                 (dailyData.size() + batchSize - 1) / batchSize,
                                 offset + batchSize,
                                 duplicateCount,
-                                newCount);
+                                newCount,
+                                batchThroughput);
                     }
                 }
                 
-                logger.info("  日期 {} 处理完成，总计：{}, 重复：{}, 新数据：{}",
+                long dayEndTime = System.currentTimeMillis();
+                long dayDuration = dayEndTime - dayStartTime;
+                double dayThroughput = (dailyDataCount * 1000.0) / dayDuration;
+                
+                logger.info("  日期 {} 处理完成，总计：{}, 重复：{}, 新数据：{}, 耗时：{} ms, 速度：{} 条/秒",
                         formatDate(businessDate), dailyData.size(), 
-                        dailyData.size() - newCount, newCount);
+                        dailyData.size() - newCount, newCount, dayDuration, dayThroughput);
             }
             
             // 7. 输出最终统计
-            logger.info("\n==================== 迁移统计 ====================");
+            logger.info("==================== 迁移统计 ====================");
             logger.info("总处理数据量：{} 条", totalRecords);
-            logger.info("过滤重复数据：{} 条 ({:.2f}%)", duplicateCount, (duplicateCount * 100.0) / totalRecords);
-            logger.info("新增数据：{} 条 ({:.2f}%)", newCount, (newCount * 100.0) / totalRecords);
-            logger.info("过滤器当前大小：{} 条", filter.size());
+            logger.info("过滤重复数据：{} 条 ({}%)", duplicateCount, (duplicateCount * 100.0) / totalRecords);
+            logger.info("新增数据：{} 条 ({}%)", newCount, (newCount * 100.0) / totalRecords);
+            logger.info("RocksDB 当前大小：{} 条", filter.size());
+            
+            // 计算平均性能
+            long totalTime = loadEndTime - loadStartTime;  // 包括加载时间
+            double avgThroughput = (totalRecords * 1000.0) / totalTime;
+            
+            logger.info("平均处理速度：{} 条/秒", avgThroughput);
             logger.info("==================================================");
             
             // 8. 验证结果合理性
@@ -156,27 +175,36 @@ public class DuplicateFilterIntegrationTest_Part2 {
             assertTrue("应该有重复数据", duplicateCount > 0);
             assertTrue("应该有新数据", newCount > 0);
             
-            // 9. 保存更新后的过滤器
-            logger.info("\n步骤 5: 保存更新后的过滤器...");
+            // 9. 触发 Compaction 优化
+            logger.info("步骤 5: 触发 RocksDB Compaction 优化...");
             filter.saveToFile();
-            logger.info("过滤器已保存，新文件大小：{} bytes", new File("data/test/filter/filter_data.dat").length());
+            logger.info("Compaction 完成，新文件大小：{} bytes", getDirectorySize(dbDir));
             
             // 10. 清理资源
             filter.destroy();
             
-            logger.info("==================== 第二部分测试完成 ====================");
+            logger.info("==================== RocksDB 第二部分测试完成 ====================");
+            logger.info("==================== 性能总结 ====================");
+            logger.info("总处理数据：{} 条", totalRecords);
+            logger.info("过滤重复：{} 条 ({}%)", duplicateCount, (duplicateCount * 100.0) / totalRecords);
+            logger.info("新增数据：{} 条", newCount);
+            logger.info("平均速度：{} 条/秒", avgThroughput);
+            logger.info("RocksDB 最终大小：{} 条", filter.size());
+            logger.info("==================================================");
+            
             logger.info("Response Body: {" +
                     "\"status\":\"success\"," +
                     "\"totalRecords\":" + totalRecords + "," +
                     "\"duplicateCount\":" + duplicateCount + "," +
                     "\"newCount\":" + newCount + "," +
                     "\"duplicateRate\":" + String.format("%.2f", (duplicateCount * 100.0) / totalRecords) + "," +
-                    "\"finalFilterSize\":" + filter.size() + "}");
+                    "\"avgThroughput\":" + String.format("%.2f", avgThroughput) + "," +
+                    "\"finalSize\":" + filter.size() + "}");
             logger.info("HTTP Status: 200 OK");
             
         } catch (Exception e) {
             logger.error("测试失败", e);
-            fail("testLoadFilterAndMigrateByDate 失败：" + e.getMessage());
+            fail("testLoadRocksDBFilterAndMigrateByDate 失败：" + e.getMessage());
             logger.info("Response Body: {\"status\":\"error\",\"message\":\"" + e.getMessage() + "\"}");
             logger.info("HTTP Status: 500 Internal Server Error");
         }
@@ -190,11 +218,11 @@ public class DuplicateFilterIntegrationTest_Part2 {
     @Test
     public void testLargeScaleDeduplicationPerformance() {
         try {
-            logger.info("==================== 性能测试：百万级数据去重 ====================");
+            logger.info("==================== RocksDB 性能测试：百万级数据去重 ====================");
             
             // 1. 创建配置和过滤器
             MigrationConfig config = createTestConfig();
-            BloomFilterDuplicateFilter filter = new BloomFilterDuplicateFilter(config);
+            RocksDBDuplicateFilter filter = new RocksDBDuplicateFilter(config);
             filter.init();
             
             // 2. 先加载基础数据（模拟 B 库已有 50 万数据）
@@ -210,9 +238,10 @@ public class DuplicateFilterIntegrationTest_Part2 {
             filter.addAll(baseData);
             long addEndTime = System.currentTimeMillis();
             
-            logger.info("  添加完成，耗时：{} ms, 速度：{:.2f} 条/秒",
-                    (addEndTime - addStartTime),
-                    (baseDataCount * 1000.0) / (addEndTime - addStartTime));
+            long addDuration = addEndTime - addStartTime;
+            double addThroughput = (baseDataCount * 1000.0) / addDuration;
+            
+            logger.info("  添加完成，耗时：{} ms, 速度：{} 条/秒", addDuration, addThroughput);
             
             // 3. 准备测试数据（100 万条，包含 50% 重复）
             int testDataCount = 1000000;
@@ -237,33 +266,47 @@ public class DuplicateFilterIntegrationTest_Part2 {
             List<MigrationData> result = filter.filterDuplicates(testData);
             
             long filterEndTime = System.currentTimeMillis();
-            long duration = filterEndTime - filterStartTime;
+            long filterDuration = filterEndTime - filterStartTime;
+            double filterThroughput = (testDataCount * 1000.0) / filterDuration;
             
             // 5. 统计结果
             logger.info("步骤 4: 去重完成");
             logger.info("  输入数据：{} 条", testDataCount);
             logger.info("  输出数据：{} 条", result.size());
             logger.info("  过滤重复：{} 条", testDataCount - result.size());
-            logger.info("  处理耗时：{} ms", duration);
-            logger.info("  处理速度：{:.2f} 条/秒", (testDataCount * 1000.0) / duration);
-            logger.info("  内存占用：约 {} MB", (Runtime.getRuntime().totalMemory() - Runtime.getRuntime().freeMemory()) / 1024 / 1024);
+            logger.info("  处理耗时：{} ms", filterDuration);
+            logger.info("  处理速度：{} 条/秒", filterThroughput);
+            
+            // 内存占用
+            long memoryUsed = (Runtime.getRuntime().totalMemory() - Runtime.getRuntime().freeMemory()) / 1024 / 1024;
+            logger.info("  内存占用：约 {} MB", memoryUsed);
             
             // 6. 验证结果正确性
             assertEquals("应过滤掉 50 万条重复数据", 500000, result.size());
             
-            // 7. 保存过滤器
-            filter.saveToFile();
-            logger.info("步骤 5: 过滤器已保存到磁盘");
+            // 7. 验证性能指标
+            assertTrue("写入速度应该大于 1 万条/秒", addThroughput > 10000);
+            assertTrue("过滤速度应该大于 1 万条/秒", filterThroughput > 10000);
+            logger.info("✓ 性能验证通过：写入和过滤速度 > 10,000 条/秒");
             
             filter.destroy();
             
-            logger.info("==================== 性能测试完成 ====================");
+            logger.info("==================== RocksDB 性能测试完成 ====================");
+            logger.info("==================== 性能总结 ====================");
+            logger.info("基础数据：{} 条", baseDataCount);
+            logger.info("测试数据：{} 条", testDataCount);
+            logger.info("写入速度：{} 条/秒", addThroughput);
+            logger.info("过滤速度：{} 条/秒", filterThroughput);
+            logger.info("内存占用：{} MB", memoryUsed);
+            logger.info("==================================================");
+            
             logger.info("Response Body: {" +
                     "\"status\":\"success\"," +
                     "\"inputSize\":" + testDataCount + "," +
                     "\"outputSize\":" + result.size() + "," +
-                    "\"durationMs\":" + duration + "," +
-                    "\"throughput\":" + String.format("%.2f", (testDataCount * 1000.0) / duration) + "}");
+                    "\"addThroughput\":" + String.format("%.2f", addThroughput) + "," +
+                    "\"filterThroughput\":" + String.format("%.2f", filterThroughput) + "," +
+                    "\"memoryMB\":" + memoryUsed + "}");
             logger.info("HTTP Status: 200 OK");
             
         } catch (Exception e) {
@@ -276,11 +319,6 @@ public class DuplicateFilterIntegrationTest_Part2 {
     
     /**
      * 生成指定日期的数据
-     * 
-     * @param businessDate 业务日期
-     * @param count 数据量
-     * @param baseSeed 基础种子（用于生成部分重复数据）
-     * @return 数据列表
      */
     private List<MigrationData> generateDailyData(Date businessDate, int count, long baseSeed) {
         List<MigrationData> dataList = new ArrayList<>(count);
@@ -367,12 +405,12 @@ public class DuplicateFilterIntegrationTest_Part2 {
      */
     private MigrationConfig createTestConfig() {
         return MigrationConfig.builder()
-                .taskId("PART2_TEST_" + System.currentTimeMillis())
-                .taskName("第二部分测试 - 按日期分批迁移")
-                .sourceDbConnection("jdbc:mysql://localhost:3306/test_source")
-                .targetDbConnection("jdbc:mysql://localhost:3306/test_target")
-                .sourceTable("test_source_table")
-                .targetTable("test_target_table")
+                .taskId("ROCKSDB_PART2_" + System.currentTimeMillis())
+                .taskName("RocksDB 第二部分测试")
+                .sourceDbConnection("jdbc:mysql://192.168.0.137:3306/unit-01")
+                .targetDbConnection("jdbc:mysql://192.168.0.137:3306/unit-02")
+                .sourceTable("source_data")
+                .targetTable("target_data")
                 .duplicateFields("duplicate_key")
                 .batchSize(10000)
                 .startDate(new Date())
@@ -385,5 +423,23 @@ public class DuplicateFilterIntegrationTest_Part2 {
                 .errorDataPath("data/test/error")
                 .detailedLogging(false)
                 .build();
+    }
+    
+    /**
+     * 递归计算目录大小
+     */
+    private long getDirectorySize(File dir) {
+        long size = 0;
+        File[] files = dir.listFiles();
+        if (files != null) {
+            for (File file : files) {
+                if (file.isDirectory()) {
+                    size += getDirectorySize(file);
+                } else {
+                    size += file.length();
+                }
+            }
+        }
+        return size;
     }
 }

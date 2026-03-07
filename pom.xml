@@ -74,6 +74,13 @@
             <version>${guava.version}</version>
         </dependency>
 
+        <!-- RocksDB - 高性能嵌入式 KV 存储 -->
+        <dependency>
+            <groupId>org.rocksdb</groupId>
+            <artifactId>rocksdbjni</artifactId>
+            <version>8.8.1</version>
+        </dependency>
+
         <!-- Lombok - 简化代码 -->
         <dependency>
             <groupId>org.projectlombok</groupId>
@@ -111,12 +118,12 @@
             <version>${mockito.version}</version>
             <scope>test</scope>
         </dependency>
-        
+
+        <!-- Disruptor - 高性能并发框架 -->
         <dependency>
-            <groupId>org.mockito</groupId>
-            <artifactId>mockito-inline</artifactId>
-            <version>${mockito.version}</version>
-            <scope>test</scope>
+            <groupId>com.lmax</groupId>
+            <artifactId>disruptor</artifactId>
+            <version>3.4.4</version>
         </dependency>
 
         <!-- Spring Boot 测试 -->
@@ -127,6 +134,60 @@
         </dependency>
     </dependencies>
 
+    <profiles>
+        <!-- 开发环境 -->
+        <profile>
+            <id>dev</id>
+            <activation>
+                <activeByDefault>true</activeByDefault>
+            </activation>
+            <properties>
+                <spring.profiles.active>dev</spring.profiles.active>
+            </properties>
+            <build>
+                <resources>
+                    <resource>
+                        <directory>src/main/resources</directory>
+                        <includes>
+                            <include>**/*.yml</include>
+                            <include>**/*.xml</include>
+                            <include>**/*.properties</include>
+                            <include>application-dev.yml</include>
+                        </includes>
+                        <excludes>
+                            <exclude>application-prod.yml</exclude>
+                            <exclude>application-test.yml</exclude>
+                        </excludes>
+                    </resource>
+                </resources>
+            </build>
+        </profile>
+        
+        <!-- 生产环境 -->
+        <profile>
+            <id>prod</id>
+            <properties>
+                <spring.profiles.active>prod</spring.profiles.active>
+            </properties>
+            <build>
+                <resources>
+                    <resource>
+                        <directory>src/main/resources</directory>
+                        <includes>
+                            <include>**/*.yml</include>
+                            <include>**/*.xml</include>
+                            <include>**/*.properties</include>
+                            <include>application-prod.yml</include>
+                        </includes>
+                        <excludes>
+                            <exclude>application-dev.yml</exclude>
+                            <exclude>application-test.yml</exclude>
+                        </excludes>
+                    </resource>
+                </resources>
+            </build>
+        </profile>
+    </profiles>
     <build>
         <plugins>
             <plugin>
@@ -140,6 +201,16 @@
                             <artifactId>lombok</artifactId>
                         </exclude>
                     </excludes>
+                    <jvmArguments>
+                        -Xms512m
+                        -Xmx2g
+                        -Xss2m
+                        -XX:MetaspaceSize=128m
+                        -XX:MaxMetaspaceSize=256m
+                        -XX:+UseG1GC
+                        -XX:+HeapDumpOnOutOfMemoryError
+                        -XX:HeapDumpPath=logs/heapdump.hprof
+                    </jvmArguments>
                 </configuration>
             </plugin>
         </plugins>
