@@ -31,6 +31,10 @@ public class DatabaseBatchInsertConsumer implements DataConsumer {
     private long errorCount = 0;
     private long duplicateCount = 0;  // 去重计数
     
+    // ✅ 最近批次的统计信息（用于监控器）
+    private volatile long lastBatchInsertCount = 0;
+    private volatile long lastBatchDuplicateCount = 0;
+    
     public DatabaseBatchInsertConsumer(JdbcTemplate targetJdbc, 
                                         String insertSql, 
                                         String insertErrorSql,
@@ -63,24 +67,46 @@ public class DatabaseBatchInsertConsumer implements DataConsumer {
                 int end = Math.min(i + batchSize, dataList.size());
                 List<MigrationData> batch = dataList.subList(start, end);
                 
-                executeBatch(batch);
-                batchCount++;
-                
-                logger.debug("【消费者】批次 {} 插入完成，范围：{}-{}", 
-                        batchCount, start, end);
+                try {
+                    executeBatch(batch);
+                    batchCount++;
+                    
+                    logger.debug("【消费者】批次 {} 插入完成，范围：{}-{}", 
+                            batchCount, start, end);
+                    
+                } catch (org.springframework.dao.DuplicateKeyException e) {
+                    // ⚠️ 主键冲突：这是正常的重复数据，不是错误
+                    // 记录但不抛出，继续处理后续数据
+                    logger.warn("⚠ 批次 {} 出现主键冲突（正常重复），范围：{}-{}，跳过该批次剩余数据",
+                            batchCount, start, end, e);
+                    
+                    // 逐条处理该批次，统计重复数量
+                    handleBatchWithDuplicates(batch, start);
+                    
+                } catch (Exception e) {
+                    // 其他数据库异常（连接失败、死锁等）
+                    logger.error("✗ 批次 {} 插入失败，范围：{}-{}", batchCount, start, end, e);
+                    throw new RuntimeException("数据库插入失败", e);
+                }
             }
             
+            //  只有全部批次都成功处理后才更新计数
             totalConsumed += dataList.size();
-            logger.info("【消费者】本轮消费 {} 条，累计：{} 条，失败：{} 条", 
-                    dataList.size(), totalConsumed, errorCount);
             
+            // ✅ 更新最近批次的统计信息
+            lastBatchInsertCount = dataList.size() - duplicateCount;
+            lastBatchDuplicateCount = duplicateCount;
+                
         } catch (Exception e) {
             logger.error("【消费者】消费失败，总数据量：{}", dataList.size(), e);
-            
+                
             // 记录失败的数据详情到单独的日志文件
             logFailedData(dataList, e);
-            
-            throw new RuntimeException("数据库插入失败", e);
+                
+            // ⚠️ 注意：这里不抛出异常，避免 Disruptor 重新投递导致重复计数
+            // 但是已经失败的数据不会计入 totalConsumed
+            lastBatchInsertCount = 0;
+            lastBatchDuplicateCount = 0;
         }
     }
     
@@ -107,6 +133,52 @@ public class DatabaseBatchInsertConsumer implements DataConsumer {
                 return batch.size();
             }
         });
+    }
+    
+    /**
+     * 处理包含重复数据的批次（逐条处理，统计重复数量）
+     */
+    private void handleBatchWithDuplicates(List<MigrationData> batch, int startIndex) {
+        logger.debug("正在逐条处理批次，起始索引：{}", startIndex);
+        
+        int batchDuplicateCount = 0;  // 本批次重复数据计数（局部变量）
+        
+        for (int i = 0; i < batch.size(); i++) {
+            MigrationData data = batch.get(i);
+            try {
+                // ⚠️ 注意：这里不能再执行 insertSql，因为已经确定是重复数据了
+
+                logger.warn("⊘ 重复数据跳过：id={}, user_code={}", data.getId(), data.getDuplicateKey());
+                batchDuplicateCount++;
+
+                // ✅ 清理 RocksDB 中的 key（必须执行，否则会导致二次校验失败）
+                if (rocksDBFilter != null && data.getDuplicateKey() != null) {
+                    try {
+                        rocksDBFilter.removeDuplicate(data.getDuplicateKey());
+                        logger.trace("✓ 已清理 RocksDB 中的重复 key: {}", data.getDuplicateKey());
+                    } catch (Exception cleanupEx) {
+                        logger.error("✗ 清理 RocksDB key 失败：{}", data.getDuplicateKey(), cleanupEx);
+                    }
+                }
+
+            } catch (Exception e) {
+                // 其他异常
+                logger.error("✗ 处理重复数据失败：id={}, user_code={}", data.getId(), data.getDuplicateKey(), e);
+                // logSingleRecordError(data, e);
+            }
+        }
+        
+        // ✅ 累加到成员变量（用于统计）
+        this.duplicateCount += batchDuplicateCount;
+        
+        //  只在批次结束时输出一次统计
+        if (batchDuplicateCount > 0) {
+            logger.info("批次处理完成，起始索引：{}, 重复数据：{} 条", startIndex, batchDuplicateCount);
+        }
+        
+        // ✅ 更新最近批次的统计信息
+        lastBatchInsertCount = batch.size() - batchDuplicateCount;
+        lastBatchDuplicateCount = batchDuplicateCount;
     }
     
     /**
@@ -181,9 +253,9 @@ public class DatabaseBatchInsertConsumer implements DataConsumer {
             e.getMessage()
         );
         
+        logger.error(errorMsg, e);
+
         // 记录到单独的 db-insert-error.log 文件
-        dbErrorLogger.error(errorMsg, e);
-        
         // 记录为可执行的 SQL 语句格式，方便后续人工处理
         logAsExecutableSQL(data, e.getMessage());
         
@@ -248,11 +320,12 @@ public class DatabaseBatchInsertConsumer implements DataConsumer {
         dbErrorLogger.error("========== 批量插入失败，总数据量：{} ==========", dataList.size(), rootCause);
         for (int i = 0; i < Math.min(10, dataList.size()); i++) {
             MigrationData data = dataList.get(i);
-            dbErrorLogger.error("[{}] id={}, user_code={}, content={}", 
+            logger.error("[{}] id={}, user_code={}, content={}",
                     i, data.getId(), data.getDuplicateKey(), data.getContent());
+            logSingleRecordError(data, rootCause);
         }
         if (dataList.size() > 10) {
-            dbErrorLogger.error("... 还有 {} 条数据", dataList.size() - 10);
+            logger.error("... 还有 {} 条数据", dataList.size() - 10);
         }
         dbErrorLogger.error("======================================");
     }
@@ -264,5 +337,19 @@ public class DatabaseBatchInsertConsumer implements DataConsumer {
     
     public long getTotalConsumed() {
         return totalConsumed;
+    }
+    
+    /**
+     * 获取最近批次的入库数量（用于监控器统计）
+     */
+    public long getLastBatchInsertCount() {
+        return lastBatchInsertCount;
+    }
+    
+    /**
+     * 获取最近批次的重复数量（用于监控器统计）
+     */
+    public long getLastBatchDuplicateCount() {
+        return lastBatchDuplicateCount;
     }
 }

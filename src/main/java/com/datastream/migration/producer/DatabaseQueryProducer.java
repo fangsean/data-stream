@@ -79,6 +79,10 @@ public class DatabaseQueryProducer implements DataProducer {
             logger.info("【生产者】批次 {}，去重：{} -> {} (过滤 {} 条)", 
                     batchCount, beforeFilter, afterFilter, duplicates);
             
+            // ✅ 注意：这里的去重只过滤了 A 库内部的重复和 RocksDB 中已存在的
+            // 对于 B 库已有的数据（未写入 RocksDB 的），会在消费端通过主键约束过滤
+            // 如果需要完全避免消费端的主键冲突，应该在 SQL 中使用 NOT EXISTS 排除
+            
             offset += batchSize;
             
             // 如果查询的数据少于 batchSize，说明已经是最后一批

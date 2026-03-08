@@ -90,4 +90,45 @@ public class BloomFilterRocksDBStrategy implements DuplicateStrategy {
     public String getStrategyName() {
         return "BloomFilter+RocksDB";
     }
+    
+    /**
+     *  原子性的 "检查并添加" 操作（乐观锁版本）
+     * 利用 RocksDB 的原子写入 + CAS 思想，无需额外加锁
+     */
+    @Override
+    public boolean checkAndAdd(String key) {
+        try {
+            // 第一重：BloomFilter 快速判断
+            if (!bloomFilter.mightContain(key)) {
+                // BloomFilter 认为不存在，则一定不存在
+                // 直接添加到 BloomFilter（线程安全，无锁）
+                bloomFilter.put(key);
+                
+                // 添加到 RocksDB（使用 WriteOptions 保证原子性）
+                byte[] keyBytes = key.getBytes(StandardCharsets.UTF_8);
+                byte[] value = "1".getBytes(StandardCharsets.UTF_8);
+                rocksDB.put(keyBytes, value);
+                
+                return false; // 不重复
+            }
+            
+            // BloomFilter 认为可能存在，需要进一步检查
+            // 第二重：RocksDB 精确校验
+            byte[] keyBytes = key.getBytes(StandardCharsets.UTF_8);
+            byte[] existingValue = rocksDB.get(keyBytes);
+            
+            if (existingValue != null) {
+                return true; // 重复
+            } else {
+                // 不存在，尝试添加
+                byte[] value = "1".getBytes(StandardCharsets.UTF_8);
+                rocksDB.put(keyBytes, value);
+                return false; // 不重复
+            }
+            
+        } catch (Exception e) {
+            logger.error("checkAndAdd 失败，key={}", key, e);
+            return false; // 异常情况按不重复处理
+        }
+    }
 }

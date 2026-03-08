@@ -13,6 +13,7 @@ public class MigrationProperties {
     private int batchSize = 1000;
     private int threadCount = 2;
     private boolean enableBloomFilter = true;
+    private boolean enableCheckpoint = true;  // 是否启用断点续传
     private long expectedInsertions = 10000;
     private double fpp = 0.001;
     private String filterDataPath = "data/spring-boot-auto-run";
@@ -113,9 +114,17 @@ public class MigrationProperties {
     public boolean isEnableBloomFilter() {
         return enableBloomFilter;
     }
-
+        
     public void setEnableBloomFilter(boolean enableBloomFilter) {
         this.enableBloomFilter = enableBloomFilter;
+    }
+        
+    public boolean isEnableCheckpoint() {
+        return enableCheckpoint;
+    }
+        
+    public void setEnableCheckpoint(boolean enableCheckpoint) {
+        this.enableCheckpoint = enableCheckpoint;
     }
 
     public long getExpectedInsertions() {

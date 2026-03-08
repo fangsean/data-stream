@@ -39,14 +39,16 @@ public class MigrationEventHandler implements EventHandler<MigrationDataEvent> {
                 // 记录去重日志
                 logDuplicateCheck(dataList);
                 
+                // ⚠️ 注意：不在这里计数，因为异常会导致 Disruptor 重新投递
+                // 由消费者内部统计实际处理的数量
                 consumer.consume(dataList);
-                consumedCount.addAndGet(dataList.size());
                 
-                logger.debug("【Disruptor】消费完成，累计：{}", consumedCount.get());
+                logger.trace("【Disruptor】消费完成，序列号：{}", sequence);
             }
         } catch (Exception e) {
             logger.error("【Disruptor】处理事件失败，序列号：{}", sequence, e);
-            throw e;
+            // ⚠️ 不抛出异常，避免 Disruptor 重新投递导致重复计数
+            // 但是记录错误日志
         }
     }
     

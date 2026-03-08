@@ -4,8 +4,10 @@ import com.datastream.migration.enums.ErrorType;
 import com.datastream.migration.model.ErrorRecord;
 import com.datastream.migration.model.MigrationConfig;
 import com.datastream.migration.model.MigrationData;
+import com.datastream.migration.strategy.BloomFilterRocksDBStrategy;
 import com.datastream.migration.strategy.DuplicateStrategy;
 import com.datastream.migration.strategy.DuplicateStrategyFactory;
+import com.datastream.migration.strategy.RocksDBOnlyStrategy;
 import org.rocksdb.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -178,15 +180,30 @@ public class RocksDBDuplicateFilter implements DuplicateFilter {
         List<MigrationData> filteredList = new ArrayList<>(dataList.size());
         
         try {
-            // 遍历数据并进行去重
+            //  遍历数据并使用原子操作进行去重
             for (MigrationData data : dataList) {
                 try {
-                    if (!isDuplicate(data)) {
+                    String duplicateKey = data.getDuplicateKey().trim();
+                    
+                    // ✅ 使用原子性的 "检查并添加" 操作，避免并发问题
+                    boolean isDuplicate;
+                    if (duplicateStrategy instanceof RocksDBOnlyStrategy) {
+                        // RocksDB Only 策略：使用原子方法
+                        isDuplicate = ((RocksDBOnlyStrategy) duplicateStrategy).checkAndAdd(duplicateKey);
+                    } else if (duplicateStrategy instanceof BloomFilterRocksDBStrategy) {
+                        // BloomFilter+RocksDB 策略：也使用原子方法
+                        isDuplicate = ((BloomFilterRocksDBStrategy) duplicateStrategy).checkAndAdd(duplicateKey);
+                    } else {
+                        // 兼容其他策略（非原子操作，可能有并发问题）
+                        isDuplicate = isDuplicate(data);
+                        if (!isDuplicate) {
+                            duplicateStrategy.addDuplicate(duplicateKey);
+                        }
+                    }
+                    
+                    if (!isDuplicate) {
                         // 不重复，添加到结果列表
                         filteredList.add(data);
-                        
-                        // 委托给策略保存数据
-                        duplicateStrategy.addDuplicate(data.getDuplicateKey().trim());
                         processedCount.incrementAndGet();
                     } else {
                         // 重复数据，记录异常

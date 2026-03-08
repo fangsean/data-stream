@@ -1,18 +1,21 @@
 package com.datastream.migration.checker;
 
+import com.datastream.migration.checkpoint.CheckpointManager;
 import com.datastream.migration.config.MigrationProperties;
+import com.datastream.migration.enums.CheckpointType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
 
-import java.io.*;
 import java.nio.file.Files;
-import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.*;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * 数据校验器 - 按天对比 A 库和 B 库数据
+ * 支持多线程并发处理和断点续传
  */
 public class DataChecker {
     
@@ -21,89 +24,98 @@ public class DataChecker {
     
     private final JdbcTemplate sourceJdbc;  // A 库
     private final JdbcTemplate targetJdbc;  // B 库
-    private final String checkpointDir;
-
+    private final CheckpointManager checkpointManager;
+    private final int threadCount;  // 并发线程数
+    
     public DataChecker(JdbcTemplate sourceJdbc, JdbcTemplate targetJdbc, MigrationProperties migrationProperties) {
+        this(sourceJdbc, targetJdbc, migrationProperties, 2);  // 默认 2 个线程
+    }
+    
+    public DataChecker(JdbcTemplate sourceJdbc, JdbcTemplate targetJdbc, MigrationProperties migrationProperties, int threadCount) {
         this.sourceJdbc = sourceJdbc;
         this.targetJdbc = targetJdbc;
-        this.checkpointDir = migrationProperties.getCheckDataPath();
+        this.threadCount = threadCount;
+        this.checkpointManager = new CheckpointManager(
+            migrationProperties.getCheckDataPath(), 
+            CheckpointType.TARGET_DATA_CHECK,  // 使用检查点类型
+            migrationProperties.isEnableCheckpoint()
+        );
 
         // 创建断点目录
         try {
-            Files.createDirectories(Paths.get(checkpointDir));
-        } catch (IOException e) {
+            Files.createDirectories(Paths.get(migrationProperties.getCheckDataPath()));
+        } catch (Exception e) {
             logger.error("创建断点目录失败", e);
         }
     }
     
     /**
-     * 按天校验数据
-     * 
-     * @param startDate 开始日期 yyyy-MM-dd
-     * @param endDate 结束日期 yyyy-MM-dd
-     * @param resumeFromCheckpoint 是否从断点续传
+     * 按天校验数据（支持多线程并发）
      */
     public void checkByDay(String startDate, String endDate, boolean resumeFromCheckpoint) {
         try {
             logger.info("开始校验数据...");
             logger.info("校验范围：{} ~ {}", startDate, endDate);
-            logger.info("断点续传：{}", resumeFromCheckpoint ? "已启用" : "未启用");
             
-            // 解析日期
-            java.time.LocalDate startLocalDate = java.time.LocalDate.parse(startDate);
-            java.time.LocalDate endLocalDate = java.time.LocalDate.parse(endDate);
+            // 1. 加载断点
+            checkpointManager.load();
             
-            // 计算总天数
-            long totalDays = java.time.temporal.ChronoUnit.DAYS.between(startLocalDate, endLocalDate) + 1;
-            logger.info("将按天校验，总天数：{} 天", totalDays);
+            // 2. 生成待校验的日期列表
+            List<String> datesToCheck = generateDatesToCheck(startDate, endDate, resumeFromCheckpoint);
             
-            // 如果启用断点续传，加载上次的进度
-            String lastCheckedDate = null;
-            if (resumeFromCheckpoint) {
-                lastCheckedDate = loadCheckpoint(startDate);
-                if (lastCheckedDate != null) {
-                    logger.info("✓ 从断点续传：上次校验到 {}", lastCheckedDate);
-                    startLocalDate = java.time.LocalDate.parse(lastCheckedDate).plusDays(1);
-                    logger.info("  从 {} 继续校验", startLocalDate);
+            if (datesToCheck.isEmpty()) {
+                logger.info("✓ 所有日期已校验完成，无需重复处理");
+                return;
+            }
+            
+            logger.info("待校验日期：{} 天", datesToCheck.size());
+            
+            // 3. 多线程并发校验
+            ExecutorService executor = Executors.newFixedThreadPool(threadCount);
+            CompletionService<CheckResult> completionService = new ExecutorCompletionService<>(executor);
+            
+            AtomicInteger checkedCount = new AtomicInteger(0);
+            AtomicInteger missingCount = new AtomicInteger(0);
+            long overallStartTime = System.currentTimeMillis();
+            
+            // 提交所有任务
+            for (String date : datesToCheck) {
+                completionService.submit(() -> {
+                    CheckResult result = checkSingleDay(date);
+                    
+                    // 标记为已完成并保存断点
+                    checkpointManager.markCompleted(date);
+                    checkpointManager.save();  // 每次完成后立即落盘
+                    
+                    checkedCount.incrementAndGet();
+                    missingCount.addAndGet(result.getMissingCount());
+                    
+                    logger.info("✓ 第 {} 天完成 - A 库：{} 条，B 库：{} 条，缺失：{} 条，进度：{}/{}", 
+                            date, result.getSourceCount(), result.getTargetCount(), 
+                            result.getMissingCount(), checkedCount.get(), datesToCheck.size());
+                    
+                    return result;
+                });
+            }
+            
+            // 等待所有任务完成
+            for (int i = 0; i < datesToCheck.size(); i++) {
+                try {
+                    completionService.take().get();
+                } catch (Exception e) {
+                    logger.error("校验任务执行失败", e);
                 }
             }
             
-            int checkedCount = 0;
-            int missingCount = 0;
-            long overallStartTime = System.currentTimeMillis();
-            
-            // 按天循环校验
-            java.time.LocalDate currentDate = startLocalDate;
-            int dayCount = 0;
-            
-            while (!currentDate.isAfter(endLocalDate)) {
-                dayCount++;
-                String currentDay = currentDate.toString();
-                
-                logger.info("\n【第 {}/{} 天】正在校验：{}", dayCount, totalDays, currentDay);
-                
-                // 校验当天数据
-                CheckResult result = checkSingleDay(currentDay);
-                checkedCount++;
-                missingCount += result.getMissingCount();
-                
-                // 保存断点
-                saveCheckpoint(startDate, currentDay);
-                
-                logger.info("✓ 第 {} 天完成 - A 库：{} 条，B 库：{} 条，缺失：{} 条", 
-                        currentDay, result.getSourceCount(), result.getTargetCount(), result.getMissingCount());
-                
-                // 移动到下一天
-                currentDate = currentDate.plusDays(1);
-            }
+            executor.shutdown();
             
             long overallDuration = System.currentTimeMillis() - overallStartTime;
             
-            logger.info("╔══════════════════════════════════════════════════════╗");
+            logger.info("\n╔══════════════════════════════════════════════════════╗");
             logger.info("✓ 数据校验完成！");
-            logger.info("  - 总天数：{} 天", totalDays);
-            logger.info("  - 已校验：{} 天", checkedCount);
-            logger.info("  - 总缺失：{} 条", missingCount);
+            logger.info("  - 总天数：{} 天", datesToCheck.size());
+            logger.info("  - 已校验：{} 天", checkedCount.get());
+            logger.info("  - 总缺失：{} 条", missingCount.get());
             logger.info("  - 总耗时：{} 秒 ({} 分钟)", overallDuration / 1000, overallDuration / 60000.0);
             logger.info("  - 日志文件：logs/check-error.log");
             logger.info("╚══════════════════════════════════════════════════════╝");
@@ -111,7 +123,36 @@ public class DataChecker {
         } catch (Exception e) {
             logger.error("✗ 数据校验失败", e);
             throw new RuntimeException("数据校验失败", e);
+        } finally {
+            // 服务停止时保存断点
+            checkpointManager.save();
+            logger.info("✓ 服务停止，断点已保存");
         }
+    }
+    
+    /**
+     * 生成待校验的日期列表（跳过已完成的）
+     */
+    private List<String> generateDatesToCheck(String startDate, String endDate, boolean resumeFromCheckpoint) {
+        List<String> allDates = new ArrayList<>();
+        java.time.LocalDate startLocalDate = java.time.LocalDate.parse(startDate);
+        java.time.LocalDate endLocalDate = java.time.LocalDate.parse(endDate);
+        
+        java.time.LocalDate currentDate = startLocalDate;
+        while (!currentDate.isAfter(endLocalDate)) {
+            String dateStr = currentDate.toString();
+            
+            // 如果启用断点续传且该日期已完成，则跳过
+            if (resumeFromCheckpoint && checkpointManager.isCompleted(dateStr)) {
+                logger.debug("跳过已完成的日期：{}", dateStr);
+            } else {
+                allDates.add(dateStr);
+            }
+            
+            currentDate = currentDate.plusDays(1);
+        }
+        
+        return allDates;
     }
     
     /**
@@ -119,36 +160,35 @@ public class DataChecker {
      */
     private CheckResult checkSingleDay(String date) {
         CheckResult result = new CheckResult();
+        result.setDate(date);
         
         try {
             String startTime = date + " 00:00:00";
             String endTime = date + " 23:59:59";
             
             // 1. 查询 A 库当天所有 user_code
-            logger.info("  正在查询 A 库数据...");
-            List<String> sourceCodes = querySourceCodes(date, startTime, endTime);
+            logger.info("[{}] 正在查询 A 库数据...", date);
+            List<String> sourceCodes = querySourceCodes(startTime, endTime);
             result.setSourceCount(sourceCodes.size());
-            logger.info("  ✓ A 库数据量：{} 条", sourceCodes.size());
+            logger.info("[{}] ✓ A 库数据量：{} 条", date, sourceCodes.size());
             
             // 2. 查询 B 库当天所有 user_code
-            logger.info("  正在查询 B 库数据...");
-            Set<String> targetCodes = queryTargetCodes(date, startTime, endTime);
+            logger.info("[{}] 正在查询 B 库数据...", date);
+            Set<String> targetCodes = queryTargetCodes(startTime, endTime);
             result.setTargetCount(targetCodes.size());
-            logger.info("  ✓ B 库数据量：{} 条", targetCodes.size());
+            logger.info("[{}] ✓ B 库数据量：{} 条", date, targetCodes.size());
             
             // 3. 链条式算法比较：A 存在但 B 不存在
-            logger.info("  正在进行链式对比...");
+            logger.info("[{}] 正在进行链式对比...", date);
             int missingCount = 0;
             
             for (String sourceCode : sourceCodes) {
                 if (!targetCodes.contains(sourceCode)) {
-                    // A 存在但 B 不存在，记录到日志
                     logMissingData(date, sourceCode);
                     missingCount++;
                     
-                    // 每 1000 条打印一次进度
                     if (missingCount % 1000 == 0) {
-                        logger.info("    已发现 {} 条缺失数据...", missingCount);
+                        logger.info("[{}]   已发现 {} 条缺失数据...", date, missingCount);
                     }
                 }
             }
@@ -156,13 +196,13 @@ public class DataChecker {
             result.setMissingCount(missingCount);
             
             if (missingCount > 0) {
-                logger.warn("  ⚠ 发现 {} 条缺失数据，已记录到 logs/check-error.log", missingCount);
+                logger.warn("[{}] ⚠ 发现 {} 条缺失数据，已记录到 logs/check-error.log", date, missingCount);
             } else {
-                logger.info("  ✓ 数据完整，无缺失");
+                logger.info("[{}] ✓ 数据完整，无缺失", date);
             }
             
         } catch (Exception e) {
-            logger.error("校验单日数据失败：{}", date, e);
+            logger.error("[{}] 校验单日数据失败", date, e);
             throw new RuntimeException("校验失败", e);
         }
         
@@ -172,7 +212,7 @@ public class DataChecker {
     /**
      * 查询 A 库当天的所有 user_code
      */
-    private List<String> querySourceCodes(String date, String startTime, String endTime) {
+    private List<String> querySourceCodes(String startTime, String endTime) {
         String sql = "SELECT user_code FROM source_data " +
                      "WHERE business_time BETWEEN ? AND ? " +
                      "ORDER BY user_code";
@@ -181,15 +221,15 @@ public class DataChecker {
     }
     
     /**
-     * 查询 B 库当天的所有 user_code（使用 Set 提高查找效率）
+     * 查询 B 库当天的所有 user_code
      */
-    private Set<String> queryTargetCodes(String date, String startTime, String endTime) {
+    private Set<String> queryTargetCodes(String startTime, String endTime) {
         String sql = "SELECT user_code FROM target_data " +
                      "WHERE business_time BETWEEN ? AND ? " +
                      "ORDER BY user_code";
         
         List<String> targetList = targetJdbc.queryForList(sql, String.class, startTime, endTime);
-        return new HashSet<>(targetList);  // 转为 Set 提高 O(1) 查找性能
+        return new HashSet<>(targetList);
     }
     
     /**
@@ -197,10 +237,10 @@ public class DataChecker {
      */
     private void logMissingData(String date, String userCode) {
         try {
-            // 格式化为可执行的 SQL 语句
             StringBuilder sqlBuilder = new StringBuilder();
             sqlBuilder.append("-- Missing data on ").append(date).append("\n");
-            sqlBuilder.append("-- SELECT * FROM source_data WHERE user_code='").append(userCode).append("' AND DATE(business_time)=DATE('").append(date).append("');\n");
+            sqlBuilder.append("-- SELECT * FROM source_data WHERE user_code='").append(userCode)
+                     .append("' AND DATE(business_time)=DATE('").append(date).append("');\n");
             
             checkLogger.info("MISSING|date={}|user_code={}", date, userCode);
             checkLogger.info("{}", sqlBuilder.toString());
@@ -211,54 +251,21 @@ public class DataChecker {
     }
     
     /**
-     * 保存断点
-     */
-    private void saveCheckpoint(String startDate, String checkedDate) {
-        try {
-            String checkpointFile = checkpointDir + File.separator + 
-                                   "check_" + startDate.replace("-", "") + ".checkpoint";
-            
-            try (BufferedWriter writer = new BufferedWriter(new FileWriter(checkpointFile))) {
-                writer.write(checkedDate);
-            }
-            
-            logger.debug("断点已保存：{} -> {}", checkpointFile, checkedDate);
-            
-        } catch (IOException e) {
-            logger.error("保存断点失败：{}", checkedDate, e);
-        }
-    }
-    
-    /**
-     * 加载断点
-     */
-    private String loadCheckpoint(String startDate) {
-        try {
-            String checkpointFile = checkpointDir + File.separator + 
-                                   "check_" + startDate.replace("-", "") + ".checkpoint";
-            
-            Path path = Paths.get(checkpointFile);
-            if (Files.exists(path)) {
-                try (BufferedReader reader = Files.newBufferedReader(path)) {
-                    String lastDate = reader.readLine();
-                    return lastDate;
-                }
-            }
-            
-        } catch (IOException e) {
-            logger.debug("未找到断点文件或读取失败", e);
-        }
-        
-        return null;
-    }
-    
-    /**
      * 校验结果
      */
     public static class CheckResult {
-        private int sourceCount;   // A 库数量
-        private int targetCount;   // B 库数量
-        private int missingCount;  // 缺失数量
+        private String date;          // 日期
+        private int sourceCount;      // A 库数量
+        private int targetCount;      // B 库数量
+        private int missingCount;     // 缺失数量
+        
+        public String getDate() {
+            return date;
+        }
+        
+        public void setDate(String date) {
+            this.date = date;
+        }
         
         public int getSourceCount() {
             return sourceCount;

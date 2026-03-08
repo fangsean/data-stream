@@ -24,7 +24,8 @@ logging:
     com.datastream.migration.db.error: ERROR
     com.datastream.migration.rocksdb.error: ERROR
     # 关闭 Spring Boot 自动配置报告
-    org.springframework.boot.autoconfigure: WARN
+    org.springframework.boot.autoconfigure: ERROR
+    org.springframework.jdbc: ERROR
   pattern:
     console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"
     file: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"

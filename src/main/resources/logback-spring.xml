@@ -111,6 +111,10 @@
         <appender-ref ref="FILE_DUPLICATE"/>
     </logger>
     
+    <!-- ⚠️ 控制 Spring JDBC 日志级别为 WARN，避免输出大量 SQL 执行日志 -->
+    <logger name="org.springframework.jdbc.core.JdbcTemplate" level="WARN"/>
+    <logger name="org.springframework.jdbc.core.StatementCreatorUtils" level="WARN"/>
+    
     <!-- 数据校验 Logger -->
     <appender name="FILE_CHECK_ERROR" class="ch.qos.logback.core.rolling.RollingFileAppender">
         <file>${LOG_PATH}/check-error.log</file>

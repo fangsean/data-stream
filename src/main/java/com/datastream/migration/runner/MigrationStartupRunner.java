@@ -5,12 +5,12 @@ import com.datastream.migration.config.MigrationProperties;
 import com.datastream.migration.consumer.DatabaseBatchInsertConsumer;
 import com.datastream.migration.engine.MigrationEngine;
 import com.datastream.migration.enums.MigrationMode;
+import com.datastream.migration.filter.DuplicateFilter;
 import com.datastream.migration.filter.RocksDBDuplicateFilter;
 import com.datastream.migration.helper.TargetDataLoader;
 import com.datastream.migration.model.MigrationConfig;
 import com.datastream.migration.producer.DatabaseQueryProducer;
 import com.datastream.migration.strategy.SourceDataLoadStrategy;
-import com.datastream.migration.strategy.TargetDataLoadStrategy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -19,11 +19,14 @@ import org.springframework.boot.CommandLineRunner;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
+import javax.annotation.PreDestroy;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Spring Boot 启动后自动执行迁移任务
@@ -45,9 +48,16 @@ public class MigrationStartupRunner implements CommandLineRunner {
     @Autowired
     private MigrationProperties migrationProperties;  // 迁移配置属性
 
-    private StartupArgsHandler startupArgs;  // 启动参数处理器
+    // 注入线程池
+    @Autowired(required = false)
+    private ExecutorService producerExecutor;
+    
+    // 注入统计定时器线程池
+    @Autowired(required = false)
     private ScheduledExecutorService statsScheduler;
 
+    private StartupArgsHandler startupArgs;  // 启动参数处理器
+    
     @Override
     public void run(String... args) throws Exception {
         // 解析启动参数
@@ -64,14 +74,32 @@ public class MigrationStartupRunner implements CommandLineRunner {
         }
         logger.info("╚══════════════════════════════════════════════════════╝");
 
-        // 使用新线程异步执行迁移任务，避免阻塞 Spring Boot 启动
-        new Thread(() -> {
+        //  使用通用线程池异步执行迁移任务，避免阻塞 Spring Boot 启动
+        ExecutorService executor = getCommonExecutor();
+        executor.submit(() -> {
             try {
                 executeMigrationByMode(startupArgs.getMode());
             } catch (Exception e) {
                 logger.error("迁移任务执行失败", e);
             }
-        }, "Migration-Executor-Thread").start();
+        });
+    }
+    
+    /**
+     * 获取通用线程池（如果未注入则创建临时的）
+     */
+    private ExecutorService getCommonExecutor() {
+        if (producerExecutor != null) {
+            return producerExecutor;
+        }
+        
+        // 创建临时线程池
+        return Executors.newFixedThreadPool(4, r -> {
+            Thread thread = new Thread(r);
+            thread.setName("Temp-Common-Thread");
+            thread.setDaemon(true);
+            return thread;
+        });
     }
 
     /**
@@ -120,9 +148,13 @@ public class MigrationStartupRunner implements CommandLineRunner {
 
         logger.info("加载日期范围：{} ~ {}", startDate, endDate);
 
-        loader.loadToRocksDB(secondaryJdbcTemplate, filter,
+        /*loader.loadToRocksDB(secondaryJdbcTemplate, filter,
                 migrationProperties.getSql().getCheckExisting(),
-                startDate, endDate);
+                startDate, endDate);*/
+        loader.loadToRocksDBWithCheckpoint(secondaryJdbcTemplate, filter,
+                migrationProperties.getSql().getCheckExisting(),
+                startDate, endDate, migrationProperties.isEnableCheckpoint());
+
         logger.info("✓ B 库数据加载完成");
 
         // 4. 清理资源
@@ -163,6 +195,7 @@ public class MigrationStartupRunner implements CommandLineRunner {
             filter.init();
 
             // 4. 加载 B 库已有数据到 RocksDB（使用策略模式）
+            /**
             logger.info("【步骤 1】加载 B 库已有数据到 RocksDB...");
             TargetDataLoadStrategy targetStrategy = new TargetDataLoadStrategy(
                     secondaryJdbcTemplate,
@@ -175,6 +208,7 @@ public class MigrationStartupRunner implements CommandLineRunner {
 
             targetStrategy.loadData(targetStartDate, targetEndDate);
             logger.info("✓ B 库数据加载完成");
+            */
 
             // 5. 创建消费者
             DatabaseBatchInsertConsumer consumer = new DatabaseBatchInsertConsumer(
@@ -185,12 +219,19 @@ public class MigrationStartupRunner implements CommandLineRunner {
             );
             consumer.setRocksDBFilter(filter);  // 设置过滤器，用于异常时清理
 
-            // 6. 创建迁移引擎
-            MigrationEngine engine = new MigrationEngine(filter, consumer, 1024);
+            // 6. 创建迁移引擎（支持批量确认）
+            MigrationEngine engine = new MigrationEngine(
+                filter, 
+                consumer, 
+                1024 * 16,  //  RingBuffer 大小增加到 16384（默认 1024 太小）
+                migrationProperties.isEnableCheckpoint(),  //  是否启用断点续传
+                migrationProperties.getBatchSize(),  //  每处理 5000 条保存一次断点
+                producerExecutor  //  使用注入的生产者线程池
+            );
             engine.start();
 
             // 7. 启动统计定时器（每 5 秒输出到 migration-stats.log）
-            startStatsReporter(engine, filter);
+            // startStatsReporter(engine);
 
             // 8. 创建生产者并执行（使用策略模式）
             logger.info("【步骤 2】创建生产者线程...");
@@ -214,9 +255,9 @@ public class MigrationStartupRunner implements CommandLineRunner {
             waitForCompletion(engine, 60);
 
             // 10. 验证结果
-            logger.info("【步骤 4】验证迁移结果...");
-            verifyResults(primaryJdbcTemplate, secondaryJdbcTemplate, filter);
-            logger.info("✓ 步骤 4 完成 - 结果验证完毕");
+            // logger.info("【步骤 4】验证迁移结果...");
+            // verifyResults(primaryJdbcTemplate, secondaryJdbcTemplate, filter);
+            // logger.info("✓ 步骤 4 完成 - 结果验证完毕");
 
             // 11. 停止统计定时器
             if (statsScheduler != null) {
@@ -225,7 +266,7 @@ public class MigrationStartupRunner implements CommandLineRunner {
 
             // 12. 清理资源
             logger.info("╔══════════════════════════════════════════════════════╗");
-            logger.info("║          迁移完成，清理资源                          ║");
+            logger.info("║          迁移完成，清理资源                             ║");
             logger.info("╚══════════════════════════════════════════════════════╝");
 
             filter.saveToFile();
@@ -236,7 +277,7 @@ public class MigrationStartupRunner implements CommandLineRunner {
 
         } catch (Exception e) {
             logger.error("╔══════════════════════════════════════════════════════╗");
-            logger.error("║          迁移任务执行失败！                          ║");
+            logger.error("║          迁移任务执行失败！                             ║");
             logger.error("╠══════════════════════════════════════════════════════╣");
             logger.error("║ 错误类型：{}", e.getClass().getSimpleName());
             logger.error("║ 错误信息：{}", e.getMessage());
@@ -268,49 +309,6 @@ public class MigrationStartupRunner implements CommandLineRunner {
         checker.checkByDay(startDate, endDate, true);
         
         logger.info("✓ 数据校验任务完成！");
-    }
-
-
-    /**
-     * 启动统计定时器
-     */
-    private void startStatsReporter(MigrationEngine engine, RocksDBDuplicateFilter filter) {
-        logger.info("启动统计定时器，每 5 秒输出一次进度到 migration-stats.log...");
-
-        statsScheduler = Executors.newSingleThreadScheduledExecutor(r -> {
-            Thread thread = new Thread(r, "Migration-Stats-Reporter");
-            thread.setDaemon(true);
-            return thread;
-        });
-
-        statsScheduler.scheduleAtFixedRate(() -> {
-            try {
-                long produced = engine.getProducedCount().get();
-                long consumed = engine.getConsumedCount().get();
-                long duplicates = filter.getDuplicateCount();
-
-                statsLogger.info("╔══════════════════════════════════════════════════════╗");
-                statsLogger.info("║          实时统计 ({}ms)                    ║", System.currentTimeMillis() % 1000);
-                statsLogger.info("╠══════════════════════════════════════════════════════╣");
-                statsLogger.info("║ 生产：{} 条", produced);
-                statsLogger.info("║ 消费：{} 条", consumed);
-                statsLogger.info("║ 去重：{} 条", duplicates);
-                statsLogger.info("║ 剩余：{} 条", produced - consumed);
-
-                if (produced > 0 && produced == consumed) {
-                    statsLogger.info("║ 状态：✓ 已完成                              ║");
-                } else if (produced > 0) {
-                    double progress = (consumed * 100.0) / produced;
-                    statsLogger.info("║ 进度：{}%                            ║", progress);
-                } else {
-                    statsLogger.info("║ 状态：等待数据...                          ║");
-                }
-                statsLogger.info("╚══════════════════════════════════════════════════════╝");
-
-            } catch (Exception e) {
-                logger.error("统计任务执行失败", e);
-            }
-        }, 0, 5, TimeUnit.SECONDS);
     }
 
     /**

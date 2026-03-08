@@ -1,5 +1,7 @@
 package com.datastream.migration.helper;
 
+import com.datastream.migration.checkpoint.CheckpointManager;
+import com.datastream.migration.enums.CheckpointType;
 import com.datastream.migration.filter.DuplicateFilter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -151,6 +153,112 @@ public class TargetDataLoader {
         } catch (Exception e) {
             logger.error("加载单日数据失败：{} ~ {}", startTime, endTime, e);
             throw new RuntimeException("加载单日数据失败", e);
+        }
+    }
+    
+    /**
+     * 加载 B 库数据到 RocksDB（支持断点续传）
+     * 
+     * @param targetJdbc B 库 JDBC
+     * @param filter RocksDB 过滤器
+     * @param querySql 查询 SQL
+     * @param startDate 开始日期
+     * @param endDate 结束日期
+     * @param enableCheckpoint 是否启用断点续传
+     */
+    public void loadToRocksDBWithCheckpoint(JdbcTemplate targetJdbc, DuplicateFilter filter,
+                                            String querySql, String startDate, String endDate,
+                                            boolean enableCheckpoint) {
+        // 创建断点管理器
+        CheckpointManager checkpointManager = new CheckpointManager(
+            "data/checkpoint", 
+            CheckpointType.TARGET_DATA_LOAD, 
+            enableCheckpoint
+        );
+        
+        try {
+            logger.info("开始加载 B 库已有数据到 RocksDB...");
+            logger.info("日期范围：{} ~ {}", startDate, endDate);
+            logger.info("断点续传：{}", enableCheckpoint ? "已启用" : "未启用");
+            
+            // 1. 加载断点
+            if (enableCheckpoint) {
+                checkpointManager.load();
+            }
+            
+            // 2. 解析日期
+            LocalDate startLocalDate = LocalDate.parse(startDate, DATE_FORMATTER);
+            LocalDate endLocalDate = LocalDate.parse(endDate, DATE_FORMATTER);
+            
+            // 3. 计算总天数
+            long totalDays = java.time.temporal.ChronoUnit.DAYS.between(startLocalDate, endLocalDate) + 1;
+            logger.info("将按天拆分查询，总天数：{} 天", totalDays);
+            
+            int totalCount = 0;
+            long overallStartTime = System.currentTimeMillis();
+            
+            // 4. 按天循环查询（跳过已完成的）
+            LocalDate currentDate = startLocalDate;
+            int dayCount = 0;
+            int skippedCount = 0;
+            
+            while (!currentDate.isAfter(endLocalDate)) {
+                dayCount++;
+                String currentDay = currentDate.format(DATE_FORMATTER);
+                
+                // 检查是否已完成
+                if (enableCheckpoint && checkpointManager.isCompleted(currentDay)) {
+                    logger.info("⊘ 第 {}/{} 天 - 跳过已完成的日期：{}", dayCount, totalDays, currentDay);
+                    skippedCount++;
+                    currentDate = currentDate.plusDays(1);
+                    continue;
+                }
+                
+                // 构建当天的时间区间
+                String startTime = currentDate.atStartOfDay().format(DATETIME_FORMATTER);
+                String endTime = currentDate.atTime(23, 59, 59).format(DATETIME_FORMATTER);
+                
+                logger.info("【第 {}/{} 天】正在查询：{} ({} ~ {})",
+                        dayCount, totalDays, currentDay, startTime, endTime);
+                
+                // 5. 查询当天数据
+                int dayTotal = loadSingleDay(targetJdbc, filter, querySql, startTime, endTime);
+                totalCount += dayTotal;
+                
+                // 6. 标记为已完成并保存断点
+                if (enableCheckpoint) {
+                    checkpointManager.markCompleted(currentDay);
+                    checkpointManager.save();  //  立即落盘
+                }
+                
+                logger.info("✓ 第 {} 天完成，加载 {} 条，累计 {} 条", currentDay, dayTotal, totalCount);
+                
+                // 移动到下一天
+                currentDate = currentDate.plusDays(1);
+            }
+            
+            long overallEndTime = System.currentTimeMillis();
+            long overallDuration = overallEndTime - overallStartTime;
+            
+            logger.info("╔══════════════════════════════════════════════════════╗");
+            logger.info("✓ B 库数据加载完成！");
+            logger.info("  - 总天数：{} 天", totalDays);
+            logger.info("  - 已处理：{} 天", dayCount - skippedCount);
+            logger.info("  - 已跳过：{} 天", skippedCount);
+            logger.info("  - 总数据量：{} 条", totalCount);
+            logger.info("  - 总耗时：{} 秒 ({} 分钟)", overallDuration / 1000, overallDuration / 60000.0);
+            logger.info("  - 平均速度：{} 条/秒", (totalCount * 1000.0) / overallDuration);
+            logger.info("╚══════════════════════════════════════════════════════╝");
+            
+        } catch (Exception e) {
+            logger.error("✗ B 库数据加载失败", e);
+            throw new RuntimeException("B 库数据加载失败", e);
+        } finally {
+            // 7. 服务停止时保存断点
+            if (enableCheckpoint) {
+                checkpointManager.save();
+                logger.info("✓ 服务停止，断点已保存");
+            }
         }
     }
 }

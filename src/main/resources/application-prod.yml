@@ -27,7 +27,7 @@ spring:
 # 日志配置 - 生产环境使用 INFO 级别
 logging:
   level:
-    root: WARN
+    root: INFO
     com.datastream.migration: INFO
     com.datastream.migration.stats: INFO
     com.datastream.migration.db.error: ERROR
@@ -40,6 +40,7 @@ migration:
   filter-data-path: data/spring-boot-auto-run
   check-data-path: data/checkpoint
   enable-bloom-filter: false  # 是否启用 BloomFilter（true=使用，false=只用 RocksDB）
+  enable-checkpoint: true    # 是否启用断点续传（true=启用，false=每次重新处理）
   expected-insertions: 1000000000
   fpp: 0.001
 
@@ -47,7 +48,7 @@ migration:
   # B 库已有数据加载配置（按天拆分）
   target-data-load:
     start-date: "2024-01-01"  # 开始日期
-    end-date: "2024-01-31"    # 结束日期
+    end-date: "2024-01-07"    # 结束日期
     enabled: true            # 是否启用此功能
 
   # A 库源数据迁移配置（按天拆分）
@@ -68,9 +69,9 @@ migration:
     query: >-
       SELECT id, business_time, user_code, user_name, amount, status, remark 
       FROM source_data 
-      WHERE DATE(business_time) = DATE(?) 
-      ORDER BY id 
-#      LIMIT ? OFFSET ?
+      WHERE business_time BETWEEN ? AND ? 
+      ORDER BY id
+    #      LIMIT ? OFFSET ?
 
     # B 库插入 SQL（目标库）
     insert: >-
@@ -88,4 +89,4 @@ migration:
     check-existing: >-
       SELECT user_code 
       FROM target_data 
-      WHERE business_time >= ? AND business_time < ?
+      WHERE business_time BETWEEN ? AND ?

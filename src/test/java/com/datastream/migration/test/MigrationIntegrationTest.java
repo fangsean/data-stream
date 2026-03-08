@@ -78,7 +78,13 @@ public class MigrationIntegrationTest {
         logger.info("✓ [5/6] 消费者创建完成，批量大小：1000");
 
         // 6. 构建迁移引擎
-        engine = new MigrationEngine(duplicateFilter, consumer, 1024);
+        engine = new MigrationEngine(duplicateFilter,
+                consumer,
+                1024,
+                true,
+                1000,
+                Executors.newSingleThreadExecutor()
+        );
         engine.start();
         logger.info("✓ [6/6] 迁移引擎启动完成");
 
@@ -194,7 +200,7 @@ public class MigrationIntegrationTest {
             double progress = (consumed * 100.0) / produced;
             logger.info("║ 进度：{}%                            ║", progress);
         } else {
-            logger.info("║ 状态：等待数据...                          ║");
+            logger.info("║ 状态：等待数据...                                      ║");
         }
 
         logger.info("╚══════════════════════════════════════════════════════╝");

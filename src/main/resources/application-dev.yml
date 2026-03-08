@@ -42,17 +42,18 @@ logging:
 # 迁移任务配置
 migration:
   batch-size: 1000
-  thread-count: 2
+  thread-count: 8
   filter-data-path: data/spring-boot-auto-run
   check-data-path: data/checkpoint
   enable-bloom-filter: true  # 是否启用 BloomFilter（true=使用，false=只用 RocksDB）
+  enable-checkpoint: true    # 是否启用断点续传（true=启用，false=每次重新处理）
   expected-insertions: 100000
   fpp: 0.001
 
   # B 库已有数据加载配置（按天拆分）
   target-data-load:
     start-date: "2024-01-01"  # 开始日期
-    end-date: "2024-01-31"    # 结束日期
+    end-date: "2024-01-07"    # 结束日期
     enabled: true            # 是否启用此功能
   
   # A 库源数据迁移配置（按天拆分）
